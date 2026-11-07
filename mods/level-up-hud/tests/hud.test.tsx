@@ -1,4 +1,6 @@
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
+import type { SessionContextBreakdown } from 'claude-code'
 
 const PANE = {
   plugin: 'level-up-hud',
@@ -9,26 +11,57 @@ const PANE = {
     isFocused: false,
     bodyColumns: 40,
     placement: 'dock',
-    scroll: { offset: 0, bodyRows: 30 },
+    scroll: { offset: 0, bodyRows: 40 },
     view: {},
   },
 } as const
 
-test('the HUD shows model, effort and limits on every surface', async ($, on) => {
+const BIG = '/repo/db/schema.sql'
+
+// The engine beneath the plugin: every call the mod makes is answered here.
+function engine(on: Parameters<TestBody>[1], opts: { mcp?: boolean } = {}) {
+  const filled: string[] = []
   on('command.register', () => ({ value: { command: 'hud' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('session.usage', () => ({
-    value: { startedAt: 0, context: { window: 200000, percent: 30 }, rateLimits: [], cost: { usd: 1.5 } },
+    value: {
+      startedAt: 0,
+      context: {
+        window: 200000,
+        percent: 30,
+        breakdown: (opts.mcp
+          ? {
+              mcpTools: [
+                { name: 'mcp__monte__a', serverName: 'Monte Carlo', tokens: 9000, isLoaded: true },
+                { name: 'mcp__monte__b', serverName: 'Monte Carlo', tokens: 6000, isLoaded: true },
+                { name: 'mcp__miro__a', serverName: 'Miro', tokens: 4000, isLoaded: false },
+              ],
+            }
+          : undefined) as SessionContextBreakdown | undefined,
+      },
+      rateLimits: [],
+      cost: { usd: 1.5 },
+    },
   }))
   on('clock.now', () => ({ value: Date.parse('2026-11-06T12:00:00Z') }))
   on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
   on('store.get', () => ({ value: undefined }))
+  on('store.set', () => ({ value: undefined }))
   on('env.get', () => ({ value: 'high' }))
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('session.measure', (_, e) => ({ changed: e.changed }))
+  on('prompt.fill', (_, e) => {
+    filled.push(e.text)
+    return { isFilled: true }
+  })
+  return filled
+}
 
-  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+test('the HUD shows model, effort and limits on every surface', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'desktop', isInteractive: true })
   await $.session.measure({
     context: { window: 200000, percent: 30 },
     rateLimits: [
@@ -41,9 +74,100 @@ test('the HUD shows model, effort and limits on every surface', async ($, on) =>
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /Opus 5\.5/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /5-Hour/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /5-hour/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /42%/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Weekly/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Looking clean/ })).toBeDefined()
     await ui.unmount()
   }
+})
+
+test('a large whole-file read becomes a tip that expands, fills the prompt and dismisses', async ($, on) => {
+  const filled = engine(on)
+  on('tool.call', () => ({ result: {}, text: 'x'.repeat(40000) }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: BIG })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface })
+    expect(await ui.find({ type: 'Text', text: /Large read · schema\.sql/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /~8\.0k tokens/ })).toBeDefined()
+    // collapsed until pressed
+    expect(await ui.find({ type: 'Text', text: /Search it with Grep/ })).toBeUndefined()
+    await ui.unmount()
+  }
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await ui.press({ key: `tip:read:${BIG}` })
+  expect(await ui.find({ type: 'Text', text: /Search it with Grep/ })).toBeDefined()
+  expect(await ui.find({ type: 'Link' })).toBeDefined()
+
+  await ui.press({ key: `do:read:${BIG}:Save as project rule` })
+  expect(filled[0]).toMatch(/^Add this rule to CLAUDE\.md: for large files/)
+
+  await ui.press({ key: `dismiss:read:${BIG}` })
+  expect(await ui.find({ type: 'Text', text: /Large read/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Looking clean/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a ranged read and a small read raise no tip', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {}, text: 'x'.repeat(40000) }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Read', file_path: BIG, offset: 1, limit: 2000 })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Looking clean/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('reading the same file three times is one repeat tip', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {}, text: 'x'.repeat(8000) }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  for (let i = 0; i < 3; i++) await $.tool.call({ tool: 'Read', file_path: '/repo/src/app.ts' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Read 3× · app\.ts/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('loaded MCP servers that went unused are one tip, with /mcp ready to run', async ($, on) => {
+  const filled = engine(on, { mcp: true })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  // Miro's tools load on demand, so only Monte Carlo counts
+  expect(await ui.find({ type: 'Text', text: /1 idle MCP server$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^15k$/ })).toBeDefined()
+
+  await ui.press({ key: 'tip:mcp' })
+  expect(await ui.find({ type: 'Text', text: /Monte Carlo \(15k\)/ })).toBeDefined()
+  await ui.press({ key: 'do:mcp:/mcp' })
+  expect(filled).toEqual(['/mcp'])
+  await ui.unmount()
+})
+
+test('a server whose tools were called is not idle', async ($, on) => {
+  engine(on, { mcp: true })
+  on('tool.call', () => ({ result: {}, text: 'ok' }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__monte__a' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /idle MCP/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a filling context window offers /compact', async ($, on) => {
+  engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.session.measure({ context: { window: 200000, percent: 78 }, rateLimits: [], changed: ['context'] })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Context 78% full/ })).toBeDefined()
+  await ui.press({ key: 'tip:context' })
+  expect(await ui.find({ key: 'do:context:/compact' })).toBeDefined()
+  await ui.unmount()
 })

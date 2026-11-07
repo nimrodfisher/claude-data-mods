@@ -6,7 +6,7 @@
     {
       "name": "level-up-hud",
       "source": "./mods/level-up-hud",
-      "description": "Gamified HUD: model, effort, 5-hour/weekly limits, XP and daily quest"
+      "description": "Clean HUD for model, effort, usage limits and context, with a waste detector that shows where to save tokens"
     }
   ]
 }

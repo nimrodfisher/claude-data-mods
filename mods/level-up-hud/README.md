@@ -1,6 +1,59 @@
 # Claude HUD
 
-A gamified heads-up display for Claude Code. It opens a pane beside the chat and adds a compact status line entry showing the active model, the reasoning effort, the 5-hour and weekly usage limits with reset countdowns, context fill and session cost. Every turn and tool call earns XP, so you level up through ranks, and a daily quest tracks today's turns. Run `/hud` to reopen the pane.
+A clean heads-up display for Claude Code that also helps you spend less context.
+
+It docks a pane beside the chat and adds a line to the status bar:
+
+```
+ Claude HUD                      Lv 7
+ Architect · 1,840 / 2,160 XP
+ ████████████████████████░░░░░░░░░░░░
+
+ Model    Opus 5.5
+ Effort   high · 3/5
+
+ 5-hour   ███████████░░░░░░░░░   58%
+          resets in 2h 14m
+ Weekly   ██████░░░░░░░░░░░░░░   31%
+          resets in 4d 3h
+ Context  ███████████████░░░░░   74%
+ ────────────────────────────────────
+ Save context             ~31k tokens
+ ▾ 1 idle MCP server              22k
+     Their tools sit in context but
+     went unused:
+       · Monte Carlo (22k)
+     Turn off what this project does
+     not need.
+     [ /mcp ]  [ Dismiss ]
+ ▸ Large read · schema.sql       6.4k
+ ▸ Context 74% full                 !
+ ────────────────────────────────────
+ Quest 18/25 · 112 tools · $1.42
+```
+
+## What it shows
+
+- **Model and effort**, live as you switch.
+- **Usage limits**: 5-hour and weekly, with reset countdowns. Bars turn amber at 60% and red at 85%.
+- **Context fill** for this session.
+- **Level, XP and a daily quest**: each turn and tool call earns XP.
+
+## Save context: the waste detector
+
+The pane watches what goes into your context window and lists the biggest waste first, with an estimate of the tokens you'd get back. Select a tip to open it:
+
+| Tip | When it shows | What it offers |
+| --- | --- | --- |
+| **Idle MCP servers** | A connected server's tools take up context and none were called this session | **/mcp**, to turn it off |
+| **Large read** | A whole file of over ~5k tokens was read | A link to the file, and a project rule: search with Grep, read line ranges |
+| **Read N×** | The same file was read 3 or more times | A link to the file, and a rule to summarize once |
+| **Long command output** | A command printed over ~5k tokens | A rule to pipe output through `head`, `tail` or `grep` |
+| **Context N% full** | The window is over 70% full | **/compact** and **/context** |
+
+Action buttons put the command or rule into your prompt box. Nothing runs until you press Enter. **Dismiss** hides a tip for the rest of the session. When a tip clears up on its own, for example after you turn off a server or compact, you get +25 XP.
+
+Token counts are estimates: about 4 characters per token. MCP tools that load on demand (tool search) aren't counted, since they don't take up context until they're used.
 
 ## Install
 
@@ -8,4 +61,6 @@ A gamified heads-up display for Claude Code. It opens a pane beside the chat and
 /plugin install level-up-hud --marketplace nimrodfisher/claude-data-mods
 ```
 
-Answer `y` to add the marketplace, then pick the **user** scope.
+Answer `y` to add the marketplace, then pick the **user** scope. Run `/hud` to reopen the pane at any time.
+
+The pane docks beside the chat in the terminal's fullscreen layout. A pane that opens on its own needs a terminal about 110–144 columns wide. In VS Code, run `claude` in a wide integrated terminal.
