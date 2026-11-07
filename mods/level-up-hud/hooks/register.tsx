@@ -2,6 +2,8 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { FileRead, Hud, Limit, LongOutput, McpServer, Progress, TipsView, Waste } from '../types'
+import { C as SC, footerSvg, gaugesSvg, heroSvg, wasteSvg } from './svg'
+import type { Gauge, WasteSlice } from './svg'
 
 const PANE = 'level-up-hud'
 const TITLE = 'Claude HUD'
@@ -56,7 +58,7 @@ const tips = atom({ plugin: 'level-up-hud', key: 'tips' } as const, {
 const RANKS = ['Novice', 'Apprentice', 'Coder', 'Hacker', 'Architect', 'Wizard', 'Archmage', 'Legend']
 const levelOf = (xp: number) => Math.floor(Math.sqrt(xp / 40)) + 1
 const xpFor = (lvl: number) => 40 * (lvl - 1) ** 2
-const rankOf = (lvl: number) => RANKS[Math.min(RANKS.length - 1, Math.floor((lvl - 1) / 3))]
+const rankOf = (lvl: number) => RANKS[Math.min(RANKS.length - 1, Math.floor((lvl - 1) / 3))] ?? 'Legend'
 
 const LIMIT_NAMES: Record<string, string> = {
   five_hour: '5-hour',
@@ -218,6 +220,19 @@ function tipsFor(w: Waste, contextPct: number | null, cwd: string): Tip[] {
 }
 
 const totalSaves = (list: Tip[]) => list.reduce((n, t) => n + (t.saves ?? 0), 0)
+
+// one color per kind of waste, shared by the stacked bar and the tip cards
+const tipColor = (id: string) =>
+  id === 'mcp' ? SC.indigo
+  : id.startsWith('read:') ? SC.cyan
+  : id.startsWith('repeat:') ? SC.violet
+  : id === 'output' ? SC.warn
+  : SC.bad
+const sliceLabel = (t: Tip) =>
+  t.id === 'mcp' ? 'Idle MCP'
+  : t.id === 'output' ? 'Long output'
+  : t.file ? baseName(t.file)
+  : t.title
 
 // ── status line ──────────────────────────────────────────────
 async function pushStatus($: EngineInterface, cwd: string) {
@@ -442,18 +457,24 @@ export const register: Register = on => {
       else $.ui.toast('Rule is in your prompt · press Enter to send')
     }
 
-    const TipRow = (props: { tip: Tip }) => {
+    const TipRow = (props: { tip: Tip; framed?: boolean }) => {
       const t = props.tip
       const isOpen = v.open === t.id
+      const tint = tipColor(t.id)
       return (
-        <Box flexDirection="column">
+        <Box
+          flexDirection="column"
+          {...(props.framed
+            ? { borderStyle: 'round', borderColor: isOpen ? tint : undefined, borderDimColor: !isOpen, paddingX: 1 }
+            : {})}
+        >
           <Box justifyContent="space-between">
             <Button
               key={`tip:${t.id}`}
               plain
               onPress={() => setView(x => ({ ...x, open: x.open === t.id ? null : t.id }))}
             >
-              <Text color={isOpen ? ACCENT : undefined} bold={isOpen}>
+              <Text color={isOpen ? (props.framed ? tint : ACCENT) : undefined} bold={isOpen}>
                 {isOpen ? '▾' : '▸'} {clip(t.title, cols - 8)}
               </Text>
             </Button>
@@ -494,6 +515,61 @@ export const register: Register = on => {
     }
 
     const pips = EFFORT_LEVEL[hd.effort]
+
+    // ── graphic surfaces (VS Code, desktop, mobile): SVG cards + native tip rows ──
+    if (e.surface !== 'terminal') {
+      const { Svg } = $.ui.resolve(e)
+      const gauges: Gauge[] = [
+        ...hd.limits
+          .filter(l => l.kind === 'five_hour' || l.kind === 'seven_day')
+          .map(l => ({ label: limitName(l.kind), pct: l.percentUsed, note: l.resetsAt ? countdown(l.resetsAt, now) : undefined })),
+        ...(hd.contextPct !== null ? [{ label: 'Context', pct: hd.contextPct, note: 'this session' }] : []),
+      ]
+      const slices: WasteSlice[] = all
+        .filter(t => (t.saves ?? 0) > 0)
+        .map(t => ({ label: sliceLabel(t), tokens: t.saves ?? 0, color: tipColor(t.id) }))
+      const urgent = all.find(t => t.id === 'context')?.title ?? null
+      const gaugeAlt = gauges.map(g => `${g.label} ${Math.round(g.pct)}%`).join(', ')
+
+      return (
+        <Box flexDirection="column" gap={1}>
+          <Svg
+            source={heroSvg({
+              level: lvl,
+              rank: rankOf(lvl),
+              xp: p.xp,
+              nextXp: xpFor(lvl + 1),
+              levelPct: lvlPct,
+              model: prettyModel(hd.model),
+              effort: hd.effort,
+              effortLevel: pips ?? 0,
+            })}
+            alt={`Level ${lvl} ${rankOf(lvl)}, ${p.xp} XP. ${prettyModel(hd.model)}, effort ${hd.effort}.`}
+          />
+          <Svg source={gaugesSvg(gauges)} alt={gaugeAlt || 'Usage limits show after the first reply'} />
+          <Svg
+            source={wasteSvg(saves > 0 ? fmtK(saves) : null, slices, urgent)}
+            alt={all.length === 0 ? 'Looking clean' : `Save context: about ${fmtK(saves)} tokens recoverable`}
+          />
+          {all.length > 0 ? (
+            <Box flexDirection="column" gap={1}>
+              {shown.map(t => (
+                <TipRow tip={t} framed />
+              ))}
+              {all.length > TOP_TIPS ? (
+                <Button key="tips:more" plain onPress={() => setView(x => ({ ...x, showAll: !x.showAll }))}>
+                  <Text dimColor>{v.showAll ? 'Show less' : `+${all.length - TOP_TIPS} more tips`}</Text>
+                </Button>
+              ) : null}
+            </Box>
+          ) : null}
+          <Svg
+            source={footerSvg(p.turnsToday, DAILY_QUEST, p.toolsToday, hd.costUsd.toFixed(2))}
+            alt={`Daily quest ${p.turnsToday} of ${DAILY_QUEST}. $${hd.costUsd.toFixed(2)} this session.`}
+          />
+        </Box>
+      )
+    }
 
     return (
       <Box flexDirection="column" paddingX={1}>

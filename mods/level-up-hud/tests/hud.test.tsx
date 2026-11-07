@@ -71,13 +71,25 @@ test('the HUD shows model, effort and limits on every surface', async ($, on) =>
     changed: ['rateLimits'],
   })
 
-  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+  // the terminal draws text
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await term.find({ type: 'Text', text: /Opus 5\.5/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /5-hour/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /42%/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /Weekly/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /Looking clean/ })).toBeDefined()
+  await term.unmount()
+
+  // graphic surfaces draw SVG cards that carry the same facts
+  for (const surface of ['desktop', 'vscode', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
-    expect(await ui.find({ type: 'Text', text: /Opus 5\.5/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /5-hour/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /42%/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Weekly/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Looking clean/ })).toBeDefined()
+    const hero = await ui.find({ type: 'Svg' })
+    expect(String(hero?.props.source)).toContain('Opus 5.5')
+    expect(String(hero?.props.alt)).toContain('effort high')
+    const drawn = JSON.stringify(await ui.drawn())
+    expect(drawn).toContain('5-hour 42%')
+    expect(drawn).toContain('Weekly 90%')
+    expect(drawn).toContain('Looking clean')
     await ui.unmount()
   }
 })
@@ -91,7 +103,7 @@ test('a large whole-file read becomes a tip that expands, fills the prompt and d
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /Large read · schema\.sql/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /~8\.0k tokens/ })).toBeDefined()
+    expect(JSON.stringify(await ui.drawn())).toMatch(/~8\.0k/)
     // collapsed until pressed
     expect(await ui.find({ type: 'Text', text: /Search it with Grep/ })).toBeUndefined()
     await ui.unmount()

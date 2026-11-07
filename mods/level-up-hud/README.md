@@ -2,7 +2,13 @@
 
 A clean heads-up display for Claude Code that also helps you spend less context.
 
-It docks a pane beside the chat and adds a line to the status bar:
+It docks a pane beside the chat and adds a line to the status bar.
+
+In **VS Code, the desktop app and mobile**, the pane draws graphic cards: a level ring, usage gauges, a stacked waste bar and a daily-quest strip. The cards bring their own dark theme, so they look the same in light and dark editor themes.
+
+![Claude HUD in VS Code, light and dark themes](docs/preview.png)
+
+In the **terminal**, it draws the same information as clean text:
 
 ```
  Claude HUD                      Lv 7
