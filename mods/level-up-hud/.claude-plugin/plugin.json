@@ -1,0 +1,8 @@
+{
+  "name": "level-up-hud",
+  "version": "0.1.0",
+  "description": "Gamified HUD: model, effort, 5-hour/weekly limits, today's quest, XP and level",
+  "author": { "name": "Nimrod Fisher" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
