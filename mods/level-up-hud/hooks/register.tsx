@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { FileRead, Hud, Limit, LongOutput, McpServer, Progress, TipsView, Waste } from '../types'
-import { C as SC, footerSvg, gaugesSvg, heatColor, heroSvg, wasteSvg } from './svg'
+import type { FileRead, Hud, Limit, LongOutput, McpServer, Progress, TipsView, UsageRow, Waste } from '../types'
+import { C as SC, footerSvg, gaugesSvg, heatColor, heroSvg, usageSvg, wasteSvg } from './svg'
 import type { Gauge, WasteSlice } from './svg'
 
 const PANE = 'level-up-hud'
@@ -11,11 +11,13 @@ const DAILY_QUEST = 25 // turns per day to clear the daily quest
 const STORE_KEY = 'progress-1'
 
 // ── waste thresholds ─────────────────────────────────────────
-const BIG_READ = 5000 // tokens of one whole-file read
-const LONG_OUTPUT = 5000 // tokens of one command's output
-const REPEAT_READS = 3 // reads of the same file
-const IDLE_SERVER = 1000 // tokens an unused MCP server must cost to be worth a tip
-const CONTEXT_HIGH = 70 // % of the window
+const BIG_READ = 2000 // tokens of one whole-file read
+const LONG_OUTPUT = 2000 // tokens of one tool's output
+const REPEAT_READS = 2 // reads of the same file
+const IDLE_SERVER = 500 // tokens an unused MCP server must cost to be worth a tip
+const CONTEXT_HIGH = 50 // % of the window
+const BIG_MEMORY = 2000 // tokens of one CLAUDE.md / memory file, paid on every request
+const BIG_SKILLS = 3000 // tokens of the skill listing, paid on every request
 const CLEAN_BONUS = 25 // XP for clearing a tip
 const TOP_TIPS = 3
 
@@ -40,7 +42,10 @@ const waste = atom({ plugin: 'level-up-hud', key: 'waste' } as const, {
   outputs: [],
   servers: [],
   usedTools: [],
-}, { shape: 'waste-1' })
+  memory: [],
+  skillsTokens: 0,
+  usage: [],
+}, { shape: 'waste-2' })
 
 const tips = atom({ plugin: 'level-up-hud', key: 'tips' } as const, {
   open: null,
@@ -179,14 +184,49 @@ function tipsFor(w: Waste, contextPct: number | null, cwd: string): Tip[] {
   if (long.length > 0) {
     out.push({
       id: 'output',
-      title: `Long command output${long.length > 1 ? ` ×${long.length}` : ''}`,
+      title: `Long tool output${long.length > 1 ? ` ×${long.length}` : ''}`,
       saves: long.reduce((n, o) => n + o.tokens - 500, 0),
       why: [
-        ...long.slice(0, 3).map(o => `  $ ${clip(o.command, 26)}  ${fmtK(o.tokens)}`),
-        'Pipe through head, tail or grep to keep',
-        'only what matters.',
+        ...long.slice(0, 3).map(o => `  ${clip(o.command, 28)}  ${fmtK(o.tokens)}`),
+        'Narrow the search or pipe through head,',
+        'tail or grep to keep only what matters.',
       ],
-      actions: [ruleAction('keep command output short: pipe long output through head, tail or grep.')],
+      actions: [ruleAction('keep tool output short: narrow searches, use head_limit, and pipe long command output through head, tail or grep.')],
+    })
+  }
+
+  // paid on every request, so even a modest trim adds up
+  for (const m of w.memory.filter(f => f.tokens >= BIG_MEMORY)) {
+    out.push({
+      id: `memory:${m.path}`,
+      title: `Heavy memory · ${baseName(m.path)}`,
+      saves: Math.round(m.tokens * 0.4),
+      why: [
+        `~${fmtK(m.tokens)} tokens loaded on every request.`,
+        'Keep only rules needed every session;',
+        'move the rest into skills or docs.',
+      ],
+      file: m.path,
+      actions: [
+        {
+          label: 'Trim it',
+          fill: `Shorten ${relTo(cwd, m.path)}: keep only the rules needed in every session, cut duplicates and examples, and move reference material into separate docs. Show me the diff before saving.`,
+          kind: 'prompt',
+        },
+      ],
+    })
+  }
+  if (w.skillsTokens >= BIG_SKILLS) {
+    out.push({
+      id: 'skills',
+      title: 'Large skill listing',
+      saves: Math.round(w.skillsTokens * 0.5),
+      why: [
+        `Skill descriptions take ~${fmtK(w.skillsTokens)} tokens`,
+        'on every request. Disable plugins this',
+        'project does not use.',
+      ],
+      actions: [{ label: '/plugin', fill: '/plugin', kind: 'command' }],
     })
   }
 
@@ -221,10 +261,13 @@ const tipColor = (id: string) =>
   : id.startsWith('read:') ? SC.cyan
   : id.startsWith('repeat:') ? SC.violet
   : id === 'output' ? SC.warn
+  : id.startsWith('memory:') ? SC.ok
+  : id === 'skills' ? SC.gold
   : SC.bad
 const sliceLabel = (t: Tip) =>
   t.id === 'mcp' ? 'Idle MCP'
   : t.id === 'output' ? 'Long output'
+  : t.id === 'skills' ? 'Skills'
   : t.file ? baseName(t.file)
   : t.title
 
@@ -249,21 +292,44 @@ function rollDay(p: Progress, now: number): Progress {
   return p.day === today(now) ? p : { ...p, day: today(now), turnsToday: 0, toolsToday: 0 }
 }
 
-async function refreshServers($: EngineInterface) {
+// what /context sees: MCP schemas, memory files, the skill listing, and the window by category
+async function refreshBreakdown($: EngineInterface) {
   try {
     const u = await $.session.usage({ breakdown: 'summary' })
+    const b = u.context.breakdown
+    if (!b) return
     const byServer = new Map<string, McpServer>()
-    for (const t of u.context.breakdown?.mcpTools ?? []) {
+    for (const t of b.mcpTools ?? []) {
       if (!t.isLoaded) continue // schemas loaded on demand cost nothing until searched
       const s = byServer.get(t.serverName) ?? { name: t.serverName, tokens: 0, tools: [] }
       s.tokens += t.tokens
       s.tools.push(t.name)
       byServer.set(t.serverName, s)
     }
-    await update($, waste, w => ({ ...w, servers: [...byServer.values()] }))
+    const usage = (b.categories ?? [])
+      .filter(c => c.kind === 'used' && c.tokens > 0)
+      .sort((x, y) => y.tokens - x.tokens)
+      .slice(0, 5)
+      .map(c => ({ name: c.name, tokens: c.tokens }))
+    await update($, waste, w => ({
+      ...w,
+      servers: [...byServer.values()],
+      memory: (b.memoryFiles ?? []).map(f => ({ path: f.path, tokens: f.tokens })),
+      skillsTokens: b.skills?.tokens ?? 0,
+      usage,
+    }))
   } catch {
-    // no breakdown on this host: the MCP tip stays quiet
+    // no breakdown on this host: those tips stay quiet
   }
+}
+
+// a short label for what a tool call ran, for the long-output tip
+const ranLabel = (tool: string, e: object) => {
+  const arg = ['command', 'pattern', 'url', 'query', 'prompt']
+    .map(k => field(e, k))
+    .find((x): x is string => typeof x === 'string')
+  const name = tool.startsWith('mcp__') ? tool.split('__').slice(1).join(' ') : tool
+  return tool === 'Bash' && arg ? `$ ${arg}` : arg ? `${name}: ${arg}` : name
 }
 
 export const register: Register = on => {
@@ -288,7 +354,7 @@ export const register: Register = on => {
       contextPct: u.context.percent ?? null,
       costUsd: u.cost?.usd ?? prev.costUsd,
     }))
-    await refreshServers($)
+    await refreshBreakdown($)
 
     void $.ui.open({ id: PANE, title: TITLE })
     await pushStatus($, cwd)
@@ -349,9 +415,9 @@ export const register: Register = on => {
             )
           : [...w.reads, { path, tokens, count: 1, isRanged }].slice(-100)
       }
-      const command = field(e, 'command')
-      if (tool === 'Bash' && typeof command === 'string' && tokens >= LONG_OUTPUT) {
-        outputs = [...w.outputs, { command, tokens }].slice(-20)
+      // any tool but Read (its own tips) and the Agent tool (a subagent's report is the point)
+      if (tool !== 'Read' && tool !== 'Agent' && tool !== 'Task' && tokens >= LONG_OUTPUT) {
+        outputs = [...w.outputs, { command: ranLabel(tool, e), tokens }].slice(-20)
       }
       return { ...w, usedTools, reads, outputs }
     }).catch(() => undefined)
@@ -372,7 +438,7 @@ export const register: Register = on => {
     let after: Progress = { ...p, xp: p.xp + 10, turnsToday: p.turnsToday + 1 }
 
     // a tip that was shown and is gone now was cleaned up: reward it
-    await refreshServers($)
+    await refreshBreakdown($)
     const hd = await read($, hud)
     const v = await read($, tips)
     const live = tipsFor(await read($, waste), hd.contextPct, cwd).map(t => t.id)
@@ -478,6 +544,14 @@ export const register: Register = on => {
 
     const pips = EFFORT_LEVEL[hd.effort]
 
+    // where the context goes: each part's share of what is used
+    const usedTotal = w.usage.reduce((n, r) => n + r.tokens, 0)
+    const usageRows = w.usage.map((r: UsageRow) => ({
+      label: r.name,
+      tokens: fmtK(r.tokens),
+      pct: usedTotal > 0 ? (r.tokens / usedTotal) * 100 : 0,
+    }))
+
     // ── graphic surfaces (VS Code, desktop, mobile): SVG cards + native tip rows ──
     if (e.surface !== 'terminal') {
       const { Svg } = $.ui.resolve(e)
@@ -524,6 +598,12 @@ export const register: Register = on => {
                 </Button>
               ) : null}
             </Box>
+          ) : null}
+          {usageRows.length > 0 ? (
+            <Svg
+              source={usageSvg(`${fmtK(usedTotal)} used`, usageRows)}
+              alt={`Where your context goes: ${usageRows.map(r => `${r.label} ${r.tokens}`).join(', ')}`}
+            />
           ) : null}
           <Svg
             source={footerSvg(p.turnsToday, DAILY_QUEST, p.toolsToday, hd.costUsd.toFixed(2))}
@@ -673,6 +753,23 @@ export const register: Register = on => {
           <Button key="tips:more" plain onPress={() => setView(x => ({ ...x, showAll: !x.showAll }))}>
             <Text dimColor>{v.showAll ? '  Show less' : `  +${all.length - TOP_TIPS} more tips`}</Text>
           </Button>
+        ) : null}
+
+        {/* where the context goes */}
+        {usageRows.length > 0 ? (
+          <Card>
+            <Box justifyContent="space-between">
+              <Caps text="Context use" />
+              <Text color={SC.muted}>{fmtK(usedTotal)} used</Text>
+            </Box>
+            {usageRows.map((r, i) => (
+              <Box justifyContent="space-between">
+                <Text color={SC.text}>{clip(r.label, Math.max(8, inner - 18)).padEnd(Math.max(8, inner - 18))}</Text>
+                <MiniBar pct={r.pct} width={8} color={[SC.violet, SC.indigo, SC.cyan, SC.ok, SC.gold][i % 5] ?? SC.indigo} />
+                <Text color={SC.muted}>{r.tokens.padStart(6)}</Text>
+              </Box>
+            ))}
+          </Card>
         ) : null}
 
         {/* daily quest */}

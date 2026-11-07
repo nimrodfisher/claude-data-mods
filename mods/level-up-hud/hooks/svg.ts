@@ -188,6 +188,29 @@ export function wasteSvg(total: string | null, slices: WasteSlice[], urgent: str
   return frame(h, body)
 }
 
+// ── where the context goes: the biggest parts of the window, as /context counts them ──
+export type UsageBar = { label: string; tokens: string; pct: number }
+const USAGE_COLORS = [C.violet, C.indigo, C.cyan, C.ok, C.gold]
+
+export function usageSvg(total: string, rows: UsageBar[]) {
+  const h = 44 + rows.length * 22
+  const body =
+    `<text x="20" y="26" font-size="10" font-weight="600" letter-spacing="2.4" fill="${C.cyan}">WHERE YOUR CONTEXT GOES</text>` +
+    `<text x="${W - 20}" y="26" text-anchor="end" font-size="11" fill="${C.muted}" font-family="${MONO}">${esc(total)}</text>` +
+    rows
+      .map((r, i) => {
+        const y = 48 + i * 22
+        const label = r.label.length > 20 ? `${r.label.slice(0, 19)}…` : r.label
+        return (
+          `<text x="20" y="${y}" font-size="11" fill="${C.text}">${esc(label)}</text>` +
+          pill(160, y - 7, 130, 6, r.pct, USAGE_COLORS[i % USAGE_COLORS.length] ?? C.indigo) +
+          `<text x="${W - 20}" y="${y}" text-anchor="end" font-size="10.5" fill="${C.muted}" font-family="${MONO}">${esc(r.tokens)}</text>`
+        )
+      })
+      .join('')
+  return frame(h, body)
+}
+
 // ── footer: daily quest and session cost ─────────────────────
 export function footerSvg(turns: number, goal: number, tools: number, cost: string) {
   const h = 52

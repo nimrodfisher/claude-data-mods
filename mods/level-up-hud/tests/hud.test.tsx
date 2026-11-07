@@ -19,7 +19,7 @@ const PANE = {
 const BIG = '/repo/db/schema.sql'
 
 // The engine beneath the plugin: every call the mod makes is answered here.
-function engine(on: Parameters<TestBody>[1], opts: { mcp?: boolean } = {}) {
+function engine(on: Parameters<TestBody>[1], opts: { mcp?: boolean; breakdown?: object } = {}) {
   const filled: string[] = []
   on('command.register', () => ({ value: { command: 'hud' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
@@ -30,7 +30,7 @@ function engine(on: Parameters<TestBody>[1], opts: { mcp?: boolean } = {}) {
       context: {
         window: 200000,
         percent: 30,
-        breakdown: (opts.mcp
+        breakdown: (opts.breakdown ?? (opts.mcp
           ? {
               mcpTools: [
                 { name: 'mcp__monte__a', serverName: 'Monte Carlo', tokens: 9000, isLoaded: true },
@@ -38,7 +38,7 @@ function engine(on: Parameters<TestBody>[1], opts: { mcp?: boolean } = {}) {
                 { name: 'mcp__miro__a', serverName: 'Miro', tokens: 4000, isLoaded: false },
               ],
             }
-          : undefined) as SessionContextBreakdown | undefined,
+          : undefined)) as SessionContextBreakdown | undefined,
       },
       rateLimits: [],
       cost: { usd: 1.5 },
@@ -181,5 +181,58 @@ test('a filling context window offers /compact', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: /Context 78% full/ })).toBeDefined()
   await ui.press({ key: 'tip:context' })
   expect(await ui.find({ key: 'do:context:/compact' })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a heavy CLAUDE.md is a tip with a ready-made trim prompt', async ($, on) => {
+  const filled = engine(on, {
+    breakdown: { mcpTools: [], categories: [], memoryFiles: [{ path: '/repo/CLAUDE.md', type: 'Project', tokens: 4000 }] },
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Heavy memory · CLAUDE\.md/ })).toBeDefined()
+  await ui.press({ key: 'tip:memory:/repo/CLAUDE.md' })
+  await ui.press({ key: 'do:memory:/repo/CLAUDE.md:Trim it' })
+  expect(filled[0]).toMatch(/^Shorten CLAUDE\.md/)
+  await ui.unmount()
+})
+
+test('long output from any tool, not only Bash, is a tip', async ($, on) => {
+  engine(on)
+  on('tool.call', () => ({ result: {}, text: 'x'.repeat(12000) }))
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'Grep', pattern: 'TODO' })
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /Long tool output/ })).toBeDefined()
+  await ui.press({ key: 'tip:output' })
+  expect(await ui.find({ type: 'Text', text: /Grep: TODO/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the context-use card lists the biggest parts of the window on every surface', async ($, on) => {
+  engine(on, {
+    breakdown: {
+      mcpTools: [],
+      memoryFiles: [],
+      categories: [
+        { name: 'System tools', tokens: 12000, color: 'x', isDeferred: false, kind: 'used' },
+        { name: 'Messages', tokens: 30000, color: 'x', isDeferred: false, kind: 'used' },
+        { name: 'Free space', tokens: 150000, color: 'x', isDeferred: false, kind: 'free' },
+      ],
+    },
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+
+  const term = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  expect(await term.find({ type: 'Text', text: /Messages/ })).toBeDefined()
+  expect(await term.find({ type: 'Text', text: /Free space/ })).toBeUndefined()
+  await term.unmount()
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'vscode' })
+  const drawn = JSON.stringify(await ui.drawn())
+  expect(drawn).toContain('WHERE YOUR CONTEXT GOES')
+  expect(drawn).toContain('Messages')
   await ui.unmount()
 })

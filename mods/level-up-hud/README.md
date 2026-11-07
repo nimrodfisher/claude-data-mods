@@ -52,10 +52,14 @@ The pane watches what goes into your context window and lists the biggest waste 
 | Tip | When it shows | What it offers |
 | --- | --- | --- |
 | **Idle MCP servers** | A connected server's tools take up context and none were called this session | **/mcp**, to turn it off |
-| **Large read** | A whole file of over ~5k tokens was read | A link to the file, and a project rule: search with Grep, read line ranges |
-| **Read N×** | The same file was read 3 or more times | A link to the file, and a rule to summarize once |
-| **Long command output** | A command printed over ~5k tokens | A rule to pipe output through `head`, `tail` or `grep` |
-| **Context N% full** | The window is over 70% full | **/compact** and **/context** |
+| **Large read** | A whole file of over ~2k tokens was read | A link to the file, and a project rule: search with Grep, read line ranges |
+| **Read N×** | The same file was read 2 or more times | A link to the file, and a rule to summarize once |
+| **Long tool output** | Any tool (Bash, Grep, WebFetch, an MCP tool) returned over ~2k tokens | A rule to narrow searches and pipe output through `head`, `tail` or `grep` |
+| **Heavy memory** | A CLAUDE.md or other memory file is over ~2k tokens, paid on every request | A link to the file, and a ready-made prompt to trim it |
+| **Large skill listing** | Skill descriptions take over ~3k tokens on every request | **/plugin**, to disable what this project does not use |
+| **Context N% full** | The window is over 50% full | **/compact** and **/context** |
+
+Below the tips, **Where your context goes** lists the five biggest parts of the window, as `/context` counts them, so there is always something to read even when no tip fires.
 
 Action buttons put the command or rule into your prompt box. Nothing runs until you press Enter. **Dismiss** hides a tip for the rest of the session. When a tip clears up on its own, for example after you turn off a server or compact, you get +25 XP.
 
