@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { FileRead, Hud, Limit, LongOutput, McpServer, Progress, TipsView, Waste } from '../types'
-import { C as SC, footerSvg, gaugesSvg, heroSvg, wasteSvg } from './svg'
+import { C as SC, footerSvg, gaugesSvg, heatColor, heroSvg, wasteSvg } from './svg'
 import type { Gauge, WasteSlice } from './svg'
 
 const PANE = 'level-up-hud'
@@ -19,11 +19,6 @@ const CONTEXT_HIGH = 70 // % of the window
 const CLEAN_BONUS = 25 // XP for clearing a tip
 const TOP_TIPS = 3
 
-// ── palette: one accent, and color only where it means something ──
-const ACCENT = '#60a5fa'
-const OK = '#3fb950'
-const WARN = '#d29922'
-const BAD = '#f85149'
 
 const hud = atom({ plugin: 'level-up-hud', key: 'hud' } as const, {
   model: '…',
@@ -69,7 +64,6 @@ const LIMIT_NAMES: Record<string, string> = {
 }
 const limitName = (k: string) => LIMIT_NAMES[k] ?? k.replace(/_/g, ' ')
 
-const heat = (used: number) => (used >= 85 ? BAD : used >= 60 ? WARN : OK)
 
 const prettyModel = (m: string) =>
   m
@@ -409,44 +403,12 @@ export const register: Register = on => {
     const now = await $.clock.now()
 
     const cols = Math.max(26, Math.min(52, e.props.bodyColumns ?? e.viewport?.columns ?? 40)) - 2
-    const LABEL = 9
-    const barW = Math.max(6, cols - LABEL - 5)
 
     const lvl = levelOf(p.xp)
     const lvlPct = ((p.xp - xpFor(lvl)) / (xpFor(lvl + 1) - xpFor(lvl))) * 100
     const all = tipsFor(w, hd.contextPct, cwd).filter(t => !v.dismissed.includes(t.id))
     const shown = v.showAll ? all : all.slice(0, TOP_TIPS)
     const saves = totalSaves(all)
-
-    const Bar = (props: { pct: number; width: number; color: string }) => {
-      const n = Math.max(0, Math.min(props.width, Math.round((props.pct / 100) * props.width)))
-      return (
-        <Text>
-          <Text color={props.color}>{'█'.repeat(n)}</Text>
-          <Text dimColor>{'░'.repeat(props.width - n)}</Text>
-        </Text>
-      )
-    }
-
-    const Meter = (props: { label: string; used: number; note?: string }) => (
-      <Box flexDirection="column">
-        <Box>
-          <Text dimColor>{props.label.padEnd(LABEL)}</Text>
-          <Bar pct={props.used} width={barW} color={heat(props.used)} />
-          <Text> {String(Math.round(props.used)).padStart(3)}%</Text>
-        </Box>
-        {props.note ? <Text dimColor>{' '.repeat(LABEL)}{props.note}</Text> : null}
-      </Box>
-    )
-
-    const Row = (props: { label: string; children?: RenderChildren }) => (
-      <Box>
-        <Text dimColor>{props.label.padEnd(LABEL)}</Text>
-        <Text>{props.children}</Text>
-      </Box>
-    )
-
-    const Divider = () => <Text dimColor>{'─'.repeat(cols)}</Text>
 
     const setView = (fn: (t: TipsView) => TipsView) => update($, tips, fn)
 
@@ -474,11 +436,11 @@ export const register: Register = on => {
               plain
               onPress={() => setView(x => ({ ...x, open: x.open === t.id ? null : t.id }))}
             >
-              <Text color={isOpen ? (props.framed ? tint : ACCENT) : undefined} bold={isOpen}>
+              <Text color={isOpen ? (props.framed ? tint : SC.cyan) : undefined} bold={isOpen}>
                 {isOpen ? '▾' : '▸'} {clip(t.title, cols - 8)}
               </Text>
             </Button>
-            <Text color={t.saves === null ? BAD : WARN}>{t.saves === null ? '!' : fmtK(t.saves)}</Text>
+            <Text color={t.saves === null ? SC.bad : SC.warn}>{t.saves === null ? '!' : fmtK(t.saves)}</Text>
           </Box>
           {isOpen ? (
             <Box flexDirection="column" paddingLeft={2} marginBottom={1}>
@@ -571,78 +533,162 @@ export const register: Register = on => {
       )
     }
 
-    return (
-      <Box flexDirection="column" paddingX={1}>
-        {/* header */}
-        <Box justifyContent="space-between">
-          <Text bold>Claude HUD</Text>
-          <Text bold color={ACCENT}>Lv {lvl}</Text>
-        </Box>
-        <Text dimColor>
-          {rankOf(lvl)} · {p.xp.toLocaleString('en-US')} / {xpFor(lvl + 1).toLocaleString('en-US')} XP
+    // ── terminal: the same cards as the SVGs, drawn with colored text on dark boxes ──
+    const CARD = '#141033' // card fill, like the SVGs' navy → indigo gradient
+    const TRACK = '#2a2550'
+    const inner = cols - 4 // inside a card: round border + paddingX 1
+    const Card = (props: { border?: string; children?: RenderChildren }) => (
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderColor={props.border ?? SC.indigo}
+        backgroundColor={CARD}
+        paddingX={1}
+      >
+        {props.children}
+      </Box>
+    )
+    const Caps = (props: { text: string }) => (
+      <Text bold color={SC.cyan}>{props.text.toUpperCase().split('').join(' ')}</Text>
+    )
+    // the cyan → indigo → violet bar of the hero card
+    const GradBar = (props: { pct: number; width: number }) => {
+      const n = Math.max(0, Math.min(props.width, Math.round((props.pct / 100) * props.width)))
+      const a = Math.ceil(n / 3)
+      const b = Math.ceil((n - a) / 2)
+      return (
+        <Text>
+          <Text color={SC.cyan}>{'━'.repeat(a)}</Text>
+          <Text color={SC.indigo}>{'━'.repeat(b)}</Text>
+          <Text color={SC.violet}>{'━'.repeat(n - a - b)}</Text>
+          <Text color={TRACK}>{'━'.repeat(props.width - n)}</Text>
         </Text>
-        <Bar pct={lvlPct} width={cols} color={ACCENT} />
+      )
+    }
+    const MiniBar = (props: { pct: number; width: number; color: string }) => {
+      const n = Math.max(0, Math.min(props.width, Math.round((props.pct / 100) * props.width)))
+      return (
+        <Text>
+          <Text color={props.color}>{'▰'.repeat(n)}</Text>
+          <Text color={TRACK}>{'▱'.repeat(props.width - n)}</Text>
+        </Text>
+      )
+    }
 
-        {/* loadout */}
-        <Box flexDirection="column" marginTop={1}>
-          <Row label="Model">
-            <Text bold>{prettyModel(hd.model)}</Text>
-          </Row>
-          <Row label="Effort">
-            <Text bold>{hd.effort}</Text>
-            {pips ? <Text dimColor> · {pips}/5</Text> : null}
-          </Row>
-        </Box>
+    const tGauges = [
+      ...hd.limits
+        .filter(l => l.kind === 'five_hour' || l.kind === 'seven_day')
+        .map(l => ({ label: limitName(l.kind), pct: l.percentUsed, note: l.resetsAt ? countdown(l.resetsAt, now) : '' })),
+      ...(hd.contextPct !== null ? [{ label: 'Context', pct: hd.contextPct, note: 'session' }] : []),
+    ]
+    const colW = Math.floor(inner / Math.max(1, tGauges.length))
+    const tSlices = all.filter(t => (t.saves ?? 0) > 0)
+    const sliceW = (t: Tip) => Math.max(1, Math.round(((t.saves ?? 0) / Math.max(1, saves)) * inner))
+    const questPct = Math.min(100, (p.turnsToday / DAILY_QUEST) * 100)
+    const effortN = pips ?? 0
 
-        {/* usage */}
-        <Box flexDirection="column" marginTop={1}>
-          {hd.limits.length === 0 && <Text dimColor>Usage limits show after the first reply.</Text>}
-          {hd.limits.map(l => (
-            <Meter
-              label={limitName(l.kind)}
-              used={l.percentUsed}
-              note={l.resetsAt ? `resets in ${countdown(l.resetsAt, now)}` : undefined}
-            />
-          ))}
-          {hd.contextPct !== null && <Meter label="Context" used={hd.contextPct} />}
-        </Box>
-
-        {/* save context */}
-        <Box flexDirection="column" marginTop={1}>
-          <Divider />
-          <Box justifyContent="space-between">
-            <Text bold>Save context</Text>
-            <Text dimColor>{saves > 0 ? `~${fmtK(saves)} tokens` : ''}</Text>
+    return (
+      <Box flexDirection="column">
+        {/* hero: level badge, rank, XP, model and effort */}
+        <Card border={SC.violet}>
+          <Box>
+            <Box borderStyle="round" borderColor={SC.violet} paddingX={1} marginRight={1} flexDirection="column" alignItems="center">
+              <Text bold color={SC.text}>{String(lvl)}</Text>
+              <Text color={SC.muted}>LV</Text>
+            </Box>
+            <Box flexDirection="column" flexGrow={1}>
+              <Caps text="Claude HUD" />
+              <Text bold color={SC.text}>{rankOf(lvl)}</Text>
+              <GradBar pct={lvlPct} width={Math.max(6, inner - 8)} />
+            </Box>
           </Box>
+          <Text color={SC.muted}>
+            {p.xp.toLocaleString('en-US')} / {xpFor(lvl + 1).toLocaleString('en-US')} XP
+          </Text>
+          <Box>
+            <Text bold color={SC.text} backgroundColor={TRACK}> {prettyModel(hd.model)} </Text>
+            <Text> </Text>
+            <Text color={SC.violet}>{'●'.repeat(effortN)}</Text>
+            <Text color="#4b4580">{'●'.repeat(5 - effortN)}</Text>
+            <Text color={SC.muted}> {hd.effort}</Text>
+          </Box>
+        </Card>
+
+        {/* gauges: 5-hour, weekly, context */}
+        <Card>
+          {tGauges.length === 0 ? (
+            <Text color={SC.muted}>Usage limits show after the first reply.</Text>
+          ) : (
+            <Box>
+              {tGauges.map(g => (
+                <Box flexDirection="column" width={colW}>
+                  <Text bold color={heatColor(g.pct)}>{Math.round(g.pct)}%</Text>
+                  <MiniBar pct={g.pct} width={Math.max(3, colW - 2)} color={heatColor(g.pct)} />
+                  <Text bold color={SC.text}>{g.label}</Text>
+                  <Text color={SC.muted}>{clip(g.note, colW - 1) || ' '}</Text>
+                </Box>
+              ))}
+            </Box>
+          )}
+        </Card>
+
+        {/* save context: total, stacked bar, legend */}
+        <Card border={all.length === 0 ? SC.ok : SC.indigo}>
           {all.length === 0 ? (
             <Box flexDirection="column">
-              <Text color={OK}>✓ Looking clean</Text>
-              <Text dimColor>Tips show up here as the session grows.</Text>
+              <Text bold color={SC.ok}>✓ Looking clean</Text>
+              <Text color={SC.muted}>Tips on saving context show up here as you work.</Text>
             </Box>
           ) : (
             <Box flexDirection="column">
-              {shown.map(t => (
-                <TipRow tip={t} />
-              ))}
-              {all.length > TOP_TIPS ? (
-                <Button
-                  key="tips:more"
-                  plain
-                  onPress={() => setView(x => ({ ...x, showAll: !x.showAll }))}
-                >
-                  <Text dimColor>{v.showAll ? '  Show less' : `  +${all.length - TOP_TIPS} more`}</Text>
-                </Button>
+              <Box justifyContent="space-between">
+                <Caps text="Save context" />
+                <Text bold color={SC.text}>{saves > 0 ? `~${fmtK(saves)} tokens` : ''}</Text>
+              </Box>
+              <Text color={SC.muted}>Open a tip below to see the fix</Text>
+              {tSlices.length > 0 ? (
+                <Text>
+                  {tSlices.map(t => (
+                    <Text color={tipColor(t.id)}>{'━'.repeat(sliceW(t))}</Text>
+                  ))}
+                </Text>
               ) : null}
+              <Box flexWrap="wrap" columnGap={2}>
+                {tSlices.map(t => (
+                  <Text>
+                    <Text color={tipColor(t.id)}>● </Text>
+                    <Text color={SC.muted}>{clip(sliceLabel(t), 14)}</Text>
+                  </Text>
+                ))}
+              </Box>
             </Box>
           )}
-          <Divider />
-        </Box>
+        </Card>
 
-        {/* footer */}
-        <Text dimColor>
-          {p.turnsToday >= DAILY_QUEST ? 'Quest cleared ✓' : `Quest ${p.turnsToday}/${DAILY_QUEST}`} ·{' '}
-          {p.toolsToday} tools · ${hd.costUsd.toFixed(2)}
-        </Text>
+        {/* tips */}
+        {shown.map(t => (
+          <TipRow tip={t} framed />
+        ))}
+        {all.length > TOP_TIPS ? (
+          <Button key="tips:more" plain onPress={() => setView(x => ({ ...x, showAll: !x.showAll }))}>
+            <Text dimColor>{v.showAll ? '  Show less' : `  +${all.length - TOP_TIPS} more tips`}</Text>
+          </Button>
+        ) : null}
+
+        {/* daily quest */}
+        <Card>
+          <Box justifyContent="space-between">
+            <Text>
+              <Text bold color={SC.text}>Daily quest </Text>
+              <Text color={SC.muted}>{p.turnsToday >= DAILY_QUEST ? '✓' : `${p.turnsToday}/${DAILY_QUEST}`}</Text>
+            </Text>
+            <Text bold color={SC.text}>${hd.costUsd.toFixed(2)}</Text>
+          </Box>
+          <Box justifyContent="space-between">
+            <MiniBar pct={questPct} width={Math.max(6, inner - 12)} color={SC.gold} />
+            <Text color={SC.muted}>{p.toolsToday} tools</Text>
+          </Box>
+        </Card>
       </Box>
     )
   })
