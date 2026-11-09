@@ -41,7 +41,10 @@ function engine(on: Parameters<TestBody>[1], files = AGENTS) {
   on('session.repo', () => ({ value: null }))
   on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000, percent: 12 }, rateLimits: [] } }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: 'main\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
-  for (const ev of ['UserPromptSubmit', 'PermissionRequest', 'Stop'] as const) on(`classic.${ev}`, () => ({}))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('tool.check', () => ({ decision: 'ask' }))
   on('store.get', () => ({ value: undefined }))
   on('store.set', () => ({ value: undefined }))
   on('fs.list', () => ({
@@ -49,10 +52,11 @@ function engine(on: Parameters<TestBody>[1], files = AGENTS) {
   }))
   on('fs.read', (_, e) => {
     const path = String(e.path)
-    if (written[path]) return { value: written[path] }
+    // the fixtures stand still; what the mod writes is read back otherwise
     const a = files.find(x => path.endsWith(`/${x.session_id}.json`))
-    if (!a) throw new Error('ENOENT')
-    return { value: JSON.stringify(a) }
+    if (a) return { value: JSON.stringify(a) }
+    if (written[path]) return { value: written[path] }
+    throw new Error('ENOENT')
   })
   on('fs.write', (_, e) => {
     written[String(e.path)] = String(e.text)
@@ -136,29 +140,30 @@ test('a row opens its detail view, and Open copies the resume command', async ($
 test('the hooks write this session’s status file', async ($, on) => {
   const { written } = engine(on, [])
   await open($)
-  const base = { session_id: 'abc', cwd: '/Users/nimrod/code/demo', transcript_path: '/t.jsonl' }
-  await $.classic.UserPromptSubmit({ ...base, prompt: 'Add an HTML export to the report command' })
-  const file = '/Users/nimrod/.claude/agents-status/abc.json'
-  let rec = JSON.parse(written[file] ?? '{}')
-  expect(rec.status).toBe('running')
-  expect(rec.title).toBe('Add an HTML export to the report command')
-  expect(rec.branch).toBe('main')
+  const file = '/Users/nimrod/.claude/agents-status/context-navigator.json'
+  const rec = () => JSON.parse(written[file] ?? '{}')
+  const prompt = 'Add an HTML export to the report command'
+  await $.prompt.submit({ text: prompt, wait: false } as Parameters<typeof $.prompt.submit>[0])
+  await $.turn.start({ text: prompt, turnId: 't1' })
+  expect(rec().status).toBe('running')
+  expect(rec().title).toBe(prompt)
+  expect(rec().branch).toBe('main')
 
-  await $.classic.PermissionRequest({ ...base, tool_name: 'Bash', tool_input: { command: 'npm run migrate' } })
-  rec = JSON.parse(written[file] ?? '{}')
-  expect(rec.status).toBe('needs_input')
-  expect(rec.waiting_on).toBe('Permission: run npm run migrate')
+  await $.tool.check({ tool: 'Bash', input: { command: 'npm run migrate' } })
+  expect(rec().status).toBe('needs_input')
+  expect(rec().waiting_on).toBe('Permission: run npm run migrate')
 
-  await $.classic.Stop({ ...base, stop_hook_active: false, last_assistant_message: 'All done.', effort: { level: 'high' } })
-  rec = JSON.parse(written[file] ?? '{}')
-  expect(rec.status).toBe('done')
-  expect(rec.effort).toBe('high')
-  expect(rec.events.length).toBe(3)
+  const usage = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000, cache_creation_input_tokens: 300, model: 'claude-opus-5-5' }
+  const done = { durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer', usage } as const
+  await $.turn.complete({ ...done, answer: 'All done.' })
+  expect(rec().status).toBe('done')
+  expect(rec().tokens.total).toBe(6500)
+  expect(rec().events.length).toBe(3)
 
-  await $.classic.Stop({ ...base, stop_hook_active: false, last_assistant_message: 'Done. Use the old list or refresh it?' })
-  rec = JSON.parse(written[file] ?? '{}')
-  expect(rec.status).toBe('needs_input')
-  expect(rec.waiting_on).toBe('Asked: “Use the old list or refresh it?”')
+  await $.turn.complete({ ...done, answer: 'Done. Use the old list or refresh it?' })
+  expect(rec().status).toBe('needs_input')
+  expect(rec().waiting_on).toBe('Asked: “Use the old list or refresh it?”')
+  expect(rec().tokens.total).toBe(13000)
 })
 
 test('a stale run reads as an error, and a closed session hides after an hour', async ($, on) => {
