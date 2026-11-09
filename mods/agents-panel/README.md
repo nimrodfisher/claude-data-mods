@@ -49,15 +49,15 @@ claude plugin install agents-panel@claude-data-mods --scope user
 
 ## How it works
 
-Each session's copy of the mod listens to its own hook events and writes `~/.claude/agents-status/<session_id>.json` (or under `CLAUDE_CONFIG_DIR`). The panel reads that folder every 2 seconds. Nothing is added to `settings.json`, and the hooks never block Claude: every error is swallowed.
+Each session's copy of the mod listens to its own events (prompts, turns, tool calls and permission asks) and writes `~/.claude/agents-status/<session_id>.json` (or under `CLAUDE_CONFIG_DIR`). The panel reads that folder every 2 seconds. Nothing is added to `settings.json`, and the hooks never block Claude: every error is swallowed.
 
-Tokens are summed from each turn's usage, and effort comes from the hook input.
+It uses only the mod API's own events, not the `classic.*` settings-hook events, which an organization's security plugin can skip. Tokens are summed from each turn's usage. Model and effort come from each model request.
 
 ## Limits
 
 - **Open** copies `cd <dir> && claude --resume <id>` to the clipboard. The mod API can't focus another session's window.
 - **Allow and Deny aren't there.** The mod API can't answer another session's permission prompt.
-- Only sessions with the mod loaded show up. A user-scope install loads in the terminal, the desktop app's Code tab and VS Code. It has only been tested in the terminal.
+- Only sessions started after the install show up, since each one reports for itself. A user-scope install loads in the terminal, the desktop app's Code tab and VS Code. It has only been tested in the terminal.
 - The mod API has no atomic rename, so the panel can catch a file halfway through a write. When it does, it keeps the last good read of that file.
 
 ## Develop

@@ -13,6 +13,7 @@ const ENDED_KEEP_MS = 60 * 60_000 // a closed session stays under Done this long
 const READ_WINDOW_MS = 24 * 3_600_000 // files untouched for longer are not read
 const MAX_EVENTS = 20
 const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
+const AGENT_TOOLS = new Set(['Agent', 'Task'])
 
 const snap = atom({ plugin: 'agents-panel', key: 'snap' } as const, { now: 0, selfId: '', agents: [] }, { shape: 'snap-1' })
 const view = atom({ plugin: 'agents-panel', key: 'view' } as const, { filter: 'all', selected: null }, { shape: 'view-1' })
@@ -357,43 +358,62 @@ async function clearFinished($: Engine) {
 
 // ── the module ───────────────────────────────────────────────
 export const register: Register = on => {
-  // ── writer: this session's status file ──
-  on('classic.SessionStart', async ($, e, next) => {
-    await touch($, e, (r, at) => {
-      if (e.session_title) r.title = clip(e.session_title, 60)
-      if (e.model) r.model = e.model
-      r.ended_at = null
-      if (r.events.length === 0) addEvent(r, at, 'stop', 'Session started')
-    })
+  // ── writer: this session's status file, from native events only ──
+  // (Classic hook events can be skipped by an organization's security plugin.)
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId === undefined && rec) {
+      if (e.model) rec.model = e.model
+      if (typeof e.effort === 'string') rec.effort = e.effort
+    }
+    return yield* next(e)
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    if (!e.isMeta && !e.command && e.text.trim()) {
+      const self = await selfBase($)
+      if (self) {
+        await touch($, self, async (r, at) => {
+          if (!r.title) r.title = clip(e.text, 60)
+          r.prompt = e.text.slice(0, 2000)
+          addEvent(r, at, 'prompt', `Prompt: “${clip(e.text, 80)}”`)
+          Object.assign(r, await gitInfo($, r.cwd))
+        })
+      }
+    }
     return next(e)
   })
 
-  on('classic.UserPromptSubmit', async ($, e, next) => {
-    await touch($, e, async (r, at) => {
-      if (e.session_title) r.title = clip(e.session_title, 60)
-      else if (!r.title && e.prompt.trim()) r.title = clip(e.prompt, 60)
-      r.prompt = e.prompt.slice(0, 2000)
-      resume(r)
-      r.turn_started_at = at
-      r.stopped_at = null
-      r.ended_at = null
-      r.error = null
-      r.last_activity = 'Thinking'
-      addEvent(r, at, 'prompt', `Prompt: “${clip(e.prompt, 80)}”`)
-      Object.assign(r, await gitInfo($, e.cwd))
-    })
+  on('turn.start', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const self = await selfBase($)
+      if (self) {
+        await touch($, self, (r, at) => {
+          if (!r.prompt && e.text.trim()) {
+            r.prompt = e.text.slice(0, 2000)
+            if (!r.title) r.title = clip(e.text, 60)
+          }
+          resume(r)
+          r.turn_started_at = at
+          r.stopped_at = null
+          r.ended_at = null
+          r.error = null
+          r.last_activity = 'Thinking'
+        })
+      }
+    }
     return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
     const self = await selfBase($)
+    const tool = String(e.tool)
     if (self) {
-      const tool = String(e.tool)
       await touch($, self, (r, at) => {
         const act = activityOf(tool, e, r.cwd)
         r.tool_calls += 1
         r.last_activity = act
         addEvent(r, at, 'tool', act)
+        if (AGENT_TOOLS.has(tool)) r.subagents = { ...r.subagents, started: r.subagents.started + 1 }
         if (tool === 'AskUserQuestion') {
           const qs = (e as { questions?: readonly { question?: string }[] }).questions ?? []
           const q = qs[0]?.question ?? 'A question for you'
@@ -403,103 +423,88 @@ export const register: Register = on => {
         }
       })
     }
-    return next(e)
-  })
-
-  on('classic.PostToolUse', async ($, e, next) => {
-    const pct = await contextPct($)
-    await touch($, e, r => {
-      if (r.status === 'needs_input' || r.status === 'done') resume(r)
-      if (EDIT_TOOLS.has(e.tool_name)) {
-        const i = (e.tool_input ?? {}) as { file_path?: string; notebook_path?: string }
-        const f = i.file_path ?? i.notebook_path
-        if (f && !r.files.includes(f)) {
+    const ran = await next(e)
+    if (self) {
+      const pct = await contextPct($)
+      await touch($, self, r => {
+        if (r.status === 'needs_input' || r.status === 'done') resume(r)
+        const f = (e as { file_path?: string; notebook_path?: string }).file_path ?? (e as { notebook_path?: string }).notebook_path
+        if (EDIT_TOOLS.has(tool) && f && !ran.deny && !ran.isError && !r.files.includes(f)) {
           r.files = [...r.files, f].slice(-500)
           r.files_changed = r.files.length
         }
-      }
-      if (pct !== null) r.context_pct = pct
-    })
-    return next(e)
-  })
-
-  on('classic.PermissionRequest', async ($, e, next) => {
-    await touch($, e, (r, at) => {
-      const act = activityOf(e.tool_name, e.tool_input, r.cwd)
-      const arg = act.slice(e.tool_name.length).trim()
-      const isRun = e.tool_name === 'Bash'
-      wait(r, at, `Permission: ${isRun ? `run ${arg}` : act}`, {
-        label: isRun ? 'Claude wants to run' : `Claude wants to use ${e.tool_name}`,
-        text: arg || e.tool_name,
+        if (pct !== null) r.context_pct = pct
       })
-      addEvent(r, at, 'notify', `Waiting for permission: ${isRun ? arg : act}`)
-    })
-    return next(e)
+    }
+    return ran
   })
 
-  on('classic.Notification', async ($, e, next) => {
-    // permission_prompt and elicitation_dialog wait on the person; idle_prompt
-    // only says a finished turn is still idle, so it leaves the row under Done.
-    if (e.notification_type === 'permission_prompt' || e.notification_type === 'elicitation_dialog') {
-      await touch($, e, (r, at) => {
-        if (r.status !== 'needs_input') {
-          wait(r, at, clip(e.message, 90), { label: e.title ?? 'Claude needs you', text: e.message })
-          addEvent(r, at, 'notify', e.message)
+  on('tool.check', async ($, e, next) => {
+    const verdict = await next(e)
+    if (verdict.decision === 'ask' && e.tool !== 'AskUserQuestion') {
+      const self = await selfBase($)
+      if (self) {
+        await touch($, self, (r, at) => {
+          const act = activityOf(e.tool, e.input, r.cwd)
+          const arg = act.slice(e.tool.length).trim()
+          const isRun = e.tool === 'Bash'
+          wait(r, at, `Permission: ${isRun ? `run ${arg}` : act}`, {
+            label: isRun ? 'Claude wants to run' : `Claude wants to use ${e.tool}`,
+            text: arg || e.tool,
+          })
+          addEvent(r, at, 'notify', `Waiting for permission: ${isRun ? arg : act}`)
+        })
+      }
+    }
+    return verdict
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    const self = await selfBase($)
+    if (self) {
+      const pct = e.agentId === undefined ? await contextPct($) : null
+      await touch($, self, (r, at) => {
+        const u = e.usage
+        if (u) {
+          const t = r.tokens
+          t.input += u.input_tokens
+          t.output += u.output_tokens
+          t.cache_read += u.cache_read_input_tokens
+          t.cache_write += u.cache_creation_input_tokens
+          t.total = t.input + t.output + t.cache_read + t.cache_write
+          if (u.model && e.agentId === undefined) r.model = u.model
+        }
+        if (e.agentId !== undefined) {
+          r.subagents = { ...r.subagents, done: Math.min(r.subagents.started, r.subagents.done + 1) }
+          addEvent(r, at, 'subagent', 'Subagent finished')
+          return
+        }
+        if (pct !== null) r.context_pct = pct
+        resume(r)
+        r.stopped_at = at
+        if (e.reason === 'error' || e.reason === 'refusal') {
+          r.status = 'error'
+          r.error = e.reason === 'refusal' ? 'The model declined the request' : 'API error'
+          r.last_activity = `Stopped: ${r.error}`
+          addEvent(r, at, 'error', `Stopped: ${r.error}`)
+          return
+        }
+        r.status = 'done'
+        r.last_activity = e.reason === 'aborted' ? 'Interrupted' : 'Finished'
+        addEvent(r, at, 'stop', e.reason === 'aborted' ? 'Interrupted' : 'Turn finished')
+        // A turn that ends on a question waits on the person.
+        const last = (e.answer ?? '').trim()
+        if (e.reason === 'answer' && last.endsWith('?')) {
+          const q = last.split(/(?<=[.!?])\s+/).pop() ?? last
+          wait(r, at, `Asked: “${clip(q, 80)}”`, { label: 'Claude asks', text: q })
         }
       })
     }
     return next(e)
   })
 
-  on('classic.SubagentStart', async ($, e, next) => {
-    await touch($, e, (r, at) => {
-      r.subagents = { ...r.subagents, started: r.subagents.started + 1 }
-      addEvent(r, at, 'subagent', `Subagent “${e.agent_type}” started`)
-    })
-    return next(e)
-  })
-
-  on('classic.SubagentStop', async ($, e, next) => {
-    await touch($, e, (r, at) => {
-      r.subagents = { ...r.subagents, done: Math.min(r.subagents.started, r.subagents.done + 1) }
-      addEvent(r, at, 'subagent', `Subagent “${e.agent_type}” finished`)
-    })
-    return next(e)
-  })
-
-  on('classic.Stop', async ($, e, next) => {
-    const pct = await contextPct($)
-    await touch($, e, (r, at) => {
-      resume(r)
-      r.status = 'done'
-      r.stopped_at = at
-      r.last_activity = 'Finished'
-      if (pct !== null) r.context_pct = pct
-      addEvent(r, at, 'stop', 'Turn finished')
-      // A turn that ends on a question waits on the person.
-      const last = (e.last_assistant_message ?? '').trim()
-      if (last.endsWith('?')) {
-        const q = last.split(/(?<=[.!?])\s+/).pop() ?? last
-        wait(r, at, `Asked: “${clip(q, 80)}”`, { label: 'Claude asks', text: q })
-      }
-    })
-    return next(e)
-  })
-
-  on('classic.StopFailure', async ($, e, next) => {
-    await touch($, e, (r, at) => {
-      resume(r)
-      r.status = 'error'
-      r.stopped_at = at
-      r.error = clip(e.error_details ?? String(e.error), 90)
-      r.last_activity = `Stopped: ${r.error}`
-      addEvent(r, at, 'error', `Stopped: ${r.error}`)
-    })
-    return next(e)
-  })
-
-  on('classic.SessionEnd', async ($, e, next) => {
-    await touch($, e, (r, at) => {
+  on('session.end', async ($, e, next) => {
+    await touch($, { session_id: e.sessionId, cwd: rec?.cwd ?? '' }, (r, at) => {
       r.ended_at = at
       if (r.status === 'running' || r.status === 'needs_input') {
         resume(r)
@@ -511,30 +516,13 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('turn.complete', async ($, e, next) => {
-    const u = e.usage
-    if (u) {
-      const self = await selfBase($)
-      if (self) {
-        await touch($, self, r => {
-          const t = r.tokens
-          t.input += u.input_tokens
-          t.output += u.output_tokens
-          t.cache_read += u.cache_read_input_tokens
-          t.cache_write += u.cache_creation_input_tokens
-          t.total = t.input + t.output + t.cache_read + t.cache_write
-          if (u.model && e.agentId === undefined) r.model = u.model
-        })
-      }
-    }
-    return next(e)
-  })
-
   on('session.start', async ($, e, next) => {
     try {
       await $.command.register({ name: 'agents-panel', description: 'Open the Agents panel: every running Claude Code session' })
     } catch {}
     void $.ui.open({ id: PANE, title: TITLE })
+    const self = await selfBase($)
+    if (self) await touch($, self, () => {})
     void poll($)
     $.clock.every(POLL_MS, () => poll($))
     return next(e)
@@ -557,6 +545,7 @@ export const register: Register = on => {
     const setView = (fn: (x: PanelView) => PanelView) => update($, view, fn)
     const sec = sections(s.agents, now)
     const padX = isTerm ? 1 : 2
+    const cols = e.props.bodyColumns || e.viewport?.columns || 44
     const padY = isTerm ? 0 : 1
 
     const Icon = (p: { state: AgentState }) =>
@@ -738,14 +727,18 @@ export const register: Register = on => {
               <Icon state={state} />
               <Box flexDirection="column" flexGrow={1} flexShrink={1}>
                 <Box flexDirection="row" justifyContent="space-between" gap={1}>
-                  <Button key={`open:${r.session_id}`} plain onPress={() => setView(x => ({ ...x, selected: r.session_id }))}>
-                    <Text weight="semibold" bold={isTerm}>
-                      {clip(r.title || 'Untitled session', 60)}
+                  <Box flexShrink={1}>
+                    <Button key={`open:${r.session_id}`} plain onPress={() => setView(x => ({ ...x, selected: r.session_id }))}>
+                      <Text weight="semibold" bold={isTerm} wrap="truncate-end">
+                        {clip(r.title || 'Untitled session', Math.max(12, Math.min(60, cols - timeLabel(p.x, now).length - 8)))}
+                      </Text>
+                    </Button>
+                  </Box>
+                  <Box flexShrink={0}>
+                    <Text size="footnote" dimColor>
+                      {timeLabel(p.x, now)}
                     </Text>
-                  </Button>
-                  <Text size="footnote" dimColor>
-                    {timeLabel(p.x, now)}
-                  </Text>
+                  </Box>
                 </Box>
                 <Small mono dim>
                   {meta}
