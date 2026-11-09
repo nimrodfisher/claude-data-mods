@@ -1,0 +1,8 @@
+{
+  "name": "agents-panel",
+  "version": "0.1.0",
+  "description": "A side panel that lists every running Claude Code session: status, what it is waiting on, model, effort, tokens and recent activity",
+  "author": { "name": "Nimrod Fisher" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
