@@ -1,12 +1,19 @@
 {
   "name": "claude-data-mods",
   "description": "Claude Code mods by Nimrod Fisher",
-  "owner": { "name": "Nimrod Fisher" },
+  "owner": {
+    "name": "Nimrod Fisher"
+  },
   "plugins": [
     {
       "name": "level-up-hud",
       "source": "./mods/level-up-hud",
       "description": "Clean HUD for model, effort, usage limits and context, with a waste detector that shows where to save tokens"
+    },
+    {
+      "name": "agents-panel",
+      "source": "./mods/agents-panel",
+      "description": "A side panel listing every running Claude Code session: status, what it waits on, model, effort, tokens and recent activity"
     }
   ]
 }
